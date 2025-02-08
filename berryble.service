@@ -1,0 +1,16 @@
+[Unit]
+Description=WiFi connect via BLE UART
+After=bluetooth.service network.target
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/berryble
+Environment=PYTHONPATH=/opt/berryble/venv/lib/python3.10/site-packages
+ExecStart=/opt/berryble/venv/bin/python -u /opt/berryble/berryble.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
