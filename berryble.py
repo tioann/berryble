@@ -25,6 +25,7 @@ UART_SERVICE = '6E400001-B5A3-F393-E0A9-E50E24DCCA9E'
 RX_CHARACTERISTIC = '6E400002-B5A3-F393-E0A9-E50E24DCCA9E'
 TX_CHARACTERISTIC = '6E400003-B5A3-F393-E0A9-E50E24DCCA9E'
 
+ap_list = []
 
 class UARTDevice:
     """
@@ -110,8 +111,69 @@ def nmcli_multiline_to_json(msg):
         res.append(item)
     return res
 
+def parse_cmd(cmd: str) -> list[str]:
+    res: list[str] = []
+    # state machine
+    st_init = 0
+    st_token = 1
+    st_wait_quote = 2
+    st_escape_plain = 3
+    st_escape_quoted = 4
+    state = st_init
+    token = ""
+    for c in cmd:
+        if state == st_init:
+            if c.isspace():
+                pass
+            elif c == "\"":
+                state = st_wait_quote
+            elif c == "\\":
+                state = st_escape_plain
+            else:
+                token += c
+                state = st_token
+        elif state == st_wait_quote:
+            if c == "\"":
+                res.append(token)
+                token = ""
+                state = st_init
+            elif c == "\\":
+                state = st_escape_quoted
+            else:
+                token += c
+        elif state == st_escape_plain:
+            token += c
+            state = st_token
+        elif state == st_escape_quoted:
+            token += c
+            state = st_wait_quote
+        elif state == st_token:
+            if c == "\\":
+                state = st_escape_plain
+            elif c.isspace():
+                res.append(token)
+                token = ""
+                state = st_token
+            else:
+                token += c
+        else:
+            raise Exception(f"internal error, invalid state: {state}")
+    if state == st_init:
+        pass
+    elif state == st_token:
+        res.append(token)
+    elif state == st_wait_quote:
+        raise Exception("unclosed double quote")
+    elif state == st_escape_plain:
+        raise Exception("unexpected token end")
+    elif state == st_escape_quoted:
+        raise Exception("unexpected token end")
+    else:
+        raise Exception(f"internal error, invalid state: {state}")
+    return res
 
-def run_cmd(cmd, char):
+
+def run_cmd(cmd_str, char):
     """
     Executes WiFi-related commands and sends responses via BLE.
         
@@ -119,14 +181,25 @@ def run_cmd(cmd, char):
         cmd: Command string to execute
         char: TX characteristic for sending responses
     """
+    global ap_list
+
     try:
-        if cmd == "help":
+        parts = parse_cmd(cmd_str)
+        if len(parts) == 0:
+            return
+        cmd = parts[0].lower()
+        if cmd in ["h", "help"]:
             returncode, msg = 0, "\n".join([
-                "scan: start background wifi scan",
-                "list: list available networks",
-                "conn <ssid> [<passwd>]: connect to a network",
+                "s|scan: start background wifi scan",
+                "l|list: list available networks",
+                "c|conn <ssid>|<index> [<passwd>]: connect to a network",
+                "a|addr: list IP addresses",
+                "on: turn on wifi",
+                "off: turn off wifi",
+                "r|reboot: reboot device",
+                "p|poweroff: poweroff device",
             ])
-        elif cmd == "scan":
+        elif cmd in ["s", "scan"]:
             # Trigger a new WiFi scan
             res = subprocess.run(
                 ["nmcli", "device", "wifi", "rescan"],
@@ -135,7 +208,7 @@ def run_cmd(cmd, char):
                 text=True,
             )
             returncode, msg = res.returncode, res.stdout
-        elif cmd == "list":
+        elif cmd in ["l", "list"]:
             # List available WiFi networks with details
             res = subprocess.run(
                 ["nmcli", "-m", "multiline", "-f", "BSSID,SSID,SECURITY,SIGNAL,IN-USE,CHAN", "device", "wifi", "list"],
@@ -147,17 +220,28 @@ def run_cmd(cmd, char):
             msg = res.stdout
             if returncode == 0:
                 msg = "SSID (BSSID) SECURITY SIGNAL (CHANNEL)"
-                for t in nmcli_multiline_to_json(res.stdout):
-                    if len(msg) > 0:
-                        msg += "\n"
-                    msg += f'{t["IN-USE"]}{t["SSID"]} ({t["BSSID"]}) {t["SECURITY"]} {t["SIGNAL"]} ({t["CHAN"]})'
-        elif cmd.startswith("conn"):
+                ap_list = nmcli_multiline_to_json(res.stdout) 
+                for i, t in enumerate(ap_list):
+                    msg += f'\n{i}) {t["IN-USE"]}{t["SSID"]} ({t["BSSID"]}) {t["SECURITY"]} {t["SIGNAL"]} ({t["CHAN"]})'
+        elif cmd in ["c", "conn"]:
             # Connect to specified WiFi network
-            parts = cmd.split()
             if len(parts) < 2:
                 returncode, msg = 1, "bad format"
             else:
-                tcmd = ["nmcli", "device", "wifi", "connect", parts[1]]
+                # either use the ap name directly or the index to the ap from the last list command
+                ap_name = parts[1]
+                ap_bssid = None
+                try:
+                    idx = int(parts[1])
+                    if idx >= 0 and idx < len(ap_list):
+                        ap_name = ap_list[idx]['SSID']
+                        ap_bssid = ap_list[idx]['BSSID']
+                except ValueError:
+                    pass
+                tcmd = ["nmcli", "device", "wifi", "connect", ap_name]
+                # using the index is the way to connect to a specific BSSID
+                if ap_bssid is not None:
+                    tcmd.extend(["bssid", ap_bssid])
                 if len(parts) > 2:
                     tcmd.extend(["password", parts[2]])
                 res = subprocess.run(
@@ -168,6 +252,67 @@ def run_cmd(cmd, char):
                 )
                 returncode = res.returncode
                 msg = res.stdout
+        elif cmd in ["a", "addr"]:
+            res = subprocess.run(
+                ["ip", "-j", "a"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            returncode = res.returncode
+            msg = res.stdout
+            if returncode == 0:
+                data = None
+                try:
+                    data = json.loads(res.stdout)
+                except ValueError:
+                    pass
+                if data is not None:
+                    msg2 = ""
+                    for d in data:
+                        try:
+                            if d["operstate"] != "DOWN" and len(d["addr_info"]) > 0:
+                                msg2 += "\n" if len(msg) > 0 else ""
+                                msg2 += f'{d["ifname"]} {", ".join([a["local"] for a in d["addr_info"]])}'
+                        except KeyError:
+                            msg2 = ""
+                            break
+                    if msg2 != "":
+                        msg = msg2
+        elif cmd in ["off"]:
+            # turn off wifi
+            res = subprocess.run(
+                ["nmcli", "radio", "wifi", "off"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            returncode, msg = res.returncode, res.stdout
+        elif cmd in ["on"]:
+            # turn on wifi
+            res = subprocess.run(
+                ["nmcli", "radio", "wifi", "on"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            returncode, msg = res.returncode, res.stdout
+        elif cmd in ["r", "reboot"]:
+            res = subprocess.run(
+                ["sudo", "reboot"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            returncode, msg = res.returncode, res.stdout
+        elif cmd in ["p", "poweroff"]:
+            res = subprocess.run(
+                ["sudo", "poweroff"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            returncode, msg = res.returncode, res.stdout
         else:
             returncode = 1
             msg = "unknown command"

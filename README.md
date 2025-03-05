@@ -24,11 +24,16 @@ A main goal for this project was to develop a working solution with the least am
 
 - open `nRF Toolbox` and select `UART` under `Utils services`
 - select the bluetooth device
-- once the connection is established, type `help` at the prompt to list available commands:
-  - `help`: Show available commands
-  - `scan`: Start background wifi scan
-  - `list`: List available networks
-  - `conn <ssid> [<passwd>]`: Connect to a network
+- once the connection is established, type `help` or `h` at the prompt to list available commands:
+  - `h` or `help`: Show available commands
+  - `s` or `scan`: start background wifi scan
+  - `l` or `list`: list available networks
+  - `c` or `conn` <ssid>|<index> [<passwd>]: connect to a network using the index from the `list` command and an optional password (not needed if the AP is already known or unencrypted network). For hidden networks the SSID can be specified. SSIDs and passwords with spaces can be specified in double quotes and `\` can be used to escape a double quote or a space in the name or password.
+  - `a` or `addr`: list IP addresses
+  - `on`: turn on wifi
+  - `off`: turn off wifi
+  - `r` or `reboot`: reboot device
+  - `p` or `poweroff`: poweroff device
 - all (almost) commands correspond to a cli command, the output consists of a line for displaying the command return code followed by the actual command output
 
 ## issues
